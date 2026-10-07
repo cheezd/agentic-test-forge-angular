@@ -35,6 +35,6 @@ Put this file at the consumer repo root. Omitted thresholds default to 30, 80, a
 node dist/cli.js check --base main --json report.json
 ```
 
-`--json` writes the report, and a one-line status still prints. `forge --help` lists the flags.
+`--json` writes the report, and a one-line status still prints. `forge --help` lists the flags. `--base` scores only files changed against that ref, inside `paths`. A git failure is exit 2.
 
 Exit 0 when every hard gate that ran passed. Exit 1 when a hard gate fails. Exit 2 when config cannot be loaded or `test_project` is missing. A tool error outranks a gate failure. The JSON `status` is `pass`, `fail`, or `error`.

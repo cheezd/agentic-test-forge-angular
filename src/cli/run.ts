@@ -3,6 +3,7 @@ import path from "node:path";
 import { exitCodeFor } from "../exit-codes.js";
 import { loadForgeConfig } from "../config/load-forge-config.js";
 import { createCheckReport, type ReportStatus } from "../reporting/check-report.js";
+import { limitToDiff } from "../scope/git-diff.js";
 import { renderHelp } from "./help.js";
 import { parseArgs } from "./parse-args.js";
 import { isKnownVerb, requiresTestProject } from "./verbs.js";
@@ -38,6 +39,11 @@ export function run(args: readonly string[], io: RunIo): number {
     errors.push(loaded.error);
   } else if (loaded.config !== null && requiresTestProject(parsed.verb) && loaded.config.testProject === null) {
     errors.push("test_project is missing from forge.json.");
+  } else if (parsed.baseRef !== null && loaded.repoRoot !== null) {
+    const scoped = limitToDiff(loaded.repoRoot, parsed.baseRef, paths);
+    if (scoped.error !== null) {
+      errors.push(scoped.error);
+    }
   }
 
   const status: ReportStatus = errors.length > 0 ? "error" : "pass";
