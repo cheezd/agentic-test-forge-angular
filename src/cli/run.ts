@@ -5,6 +5,8 @@ import { scoreChangedLines } from "../coverage/score.js";
 import { coverageMissing, runVitestCoverage, type CoverageRun } from "../coverage/vitest-coverage.js";
 import { exitCodeFor } from "../exit-codes.js";
 import { loadForgeConfig } from "../config/load-forge-config.js";
+import { mutationScoreMissing, scoreMutation, type MutationFinding } from "../mutation/score.js";
+import { runStryker, type MutationRun } from "../mutation/stryker.js";
 import { createCheckReport, type GateReport, type ReportStatus } from "../reporting/check-report.js";
 import { limitToDiff } from "../scope/git-diff.js";
 import { renderHelp } from "./help.js";
@@ -19,6 +21,7 @@ export type RunIo = {
 
 export type RunOptions = {
   coverage?: (repoRoot: string, files: readonly string[]) => CoverageRun;
+  mutation?: (repoRoot: string, files: readonly string[]) => MutationRun;
 };
 
 export function run(args: readonly string[], io: RunIo, options: RunOptions = {}): number {
@@ -48,16 +51,37 @@ export function run(args: readonly string[], io: RunIo, options: RunOptions = {}
     errors.push(loaded.error);
   } else if (loaded.config !== null && requiresTestProject(parsed.verb) && loaded.config.testProject === null) {
     errors.push("test_project is missing from forge.json.");
-  } else if (parsed.baseRef !== null && loaded.repoRoot !== null) {
+  } else if (parsed.verb === verbs.mutate && parsed.baseRef === null) {
+    errors.push("mutate requires --base so mutants stay on the diff.");
+  } else if (parsed.baseRef !== null && loaded.repoRoot !== null && loaded.config !== null) {
     const scoped = limitToDiff(loaded.repoRoot, parsed.baseRef, paths);
     if (scoped.error !== null) {
       errors.push(scoped.error);
-    } else if (parsed.verb === verbs.check) {
-      const coverageGate = evaluateCoverage(loaded.repoRoot, parsed.baseRef, paths, options.coverage);
-      if (coverageGate.error !== null) {
-        errors.push(coverageGate.error);
+    } else {
+      const floor =
+        parsed.verb === verbs.mutate && parsed.threshold !== null
+          ? parsed.threshold
+          : loaded.config.mutationThreshold;
+      if (parsed.verb === verbs.check) {
+        const coverageGate = evaluateCoverage(loaded.repoRoot, parsed.baseRef, paths, options.coverage);
+        if (coverageGate.error !== null) {
+          errors.push(coverageGate.error);
+        }
+        gates.push(coverageGate.gate);
       }
-      gates.push(coverageGate.gate);
+      if (parsed.verb === verbs.check || parsed.verb === verbs.mutate) {
+        const mutationGate = evaluateMutation(
+          loaded.repoRoot,
+          parsed.baseRef,
+          paths,
+          floor,
+          options.mutation,
+        );
+        if (mutationGate.error !== null) {
+          errors.push(mutationGate.error);
+        }
+        gates.push(mutationGate.gate);
+      }
     }
   }
 
@@ -113,8 +137,48 @@ function evaluateCoverage(
   };
 }
 
-function coverageGate(status: GateReport["status"], uncovered: GateReport["uncovered"]): GateReport {
-  return { name: "coverage", status, policy: "hard", uncovered };
+function coverageGate(status: GateReport["status"], uncovered: { filepath: string; line: number }[]): GateReport {
+  return { name: "coverage", status, policy: "hard", details: { uncovered } };
+}
+
+function evaluateMutation(
+  repoRoot: string,
+  baseRef: string,
+  paths: readonly string[],
+  floor: number,
+  mutation: RunOptions["mutation"],
+): { gate: GateReport; error: string | null } {
+  const changed = gitChangedSourceLines(repoRoot, baseRef, paths);
+  if (changed.error !== null || changed.lines === null) {
+    return { gate: mutationGate("error", floor, []), error: changed.error ?? mutationScoreMissing };
+  }
+
+  const files = [...new Set(changed.lines.map((line) => line.filepath))];
+  if (files.length === 0) {
+    return { gate: mutationGate("pass", floor, []), error: null };
+  }
+
+  const produced = (mutation ?? runStryker)(repoRoot, files);
+  if (produced.error !== null || produced.files === null) {
+    return {
+      gate: mutationGate("error", floor, []),
+      error: produced.error ?? mutationScoreMissing,
+    };
+  }
+
+  const scored = scoreMutation(produced.files, files, floor);
+  if (scored.error !== null) {
+    return { gate: mutationGate("error", floor, []), error: scored.error };
+  }
+
+  return {
+    gate: mutationGate(scored.failed ? "fail" : "pass", floor, scored.findings),
+    error: null,
+  };
+}
+
+function mutationGate(status: GateReport["status"], threshold: number, findings: MutationFinding[]): GateReport {
+  return { name: "mutation", status, policy: "hard", details: { threshold, findings } };
 }
 
 function tryWriteReport(filePath: string, json: string): string | null {

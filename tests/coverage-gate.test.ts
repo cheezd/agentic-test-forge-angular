@@ -22,6 +22,7 @@ describe("coverage gate", () => {
 
     const code = run(["check", "--base", "HEAD~1", "--json", path.join(root, "report.json")], io, {
       coverage: () => ({ lcov: lcov("src/app/kept.ts", 1, 0), error: null }),
+      ...passingMutation,
     });
 
     expect(code).toBe(1);
@@ -32,7 +33,7 @@ describe("coverage gate", () => {
       reports: { coverage: { status: string; uncovered: { filepath: string; line: number }[] } };
     };
     expect(report.status).toBe("fail");
-    expect(report.gates_run).toEqual(["coverage"]);
+    expect(report.gates_run).toEqual(["coverage", "mutation"]);
     expect(report.reports.coverage.uncovered).toEqual([{ filepath: "src/app/kept.ts", line: 1 }]);
   });
 
@@ -42,6 +43,7 @@ describe("coverage gate", () => {
 
     const code = run(["check", "--base", "HEAD~1"], io, {
       coverage: () => ({ lcov: lcov("src/app/kept.ts", 1, 1), error: null }),
+      ...passingMutation,
     });
 
     expect(code).toBe(0);
@@ -54,6 +56,7 @@ describe("coverage gate", () => {
 
     const code = run(["check", "--base", "HEAD~1", "--json", path.join(root, "report.json")], io, {
       coverage: () => ({ lcov: null, error: "coverage could not be produced." }),
+      ...passingMutation,
     });
 
     expect(code).toBe(2);
@@ -109,6 +112,13 @@ function fixture(): string {
 function lcov(filepath: string, line: number, hits: number): string {
   return `SF:${filepath}\nDA:${line},${hits}\nend_of_record\n`;
 }
+
+const passingMutation = {
+  mutation: () => ({
+    files: [{ filepath: "src/app/kept.ts", killed: 1, survived: 0, inconclusive: 0 }],
+    error: null,
+  }),
+};
 
 function write(root: string, name: string, contents: string): void {
   const destination = path.join(root, name);

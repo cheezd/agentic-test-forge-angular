@@ -7,7 +7,7 @@ export type GateReport = {
   name: string;
   status: GateStatus;
   policy: string;
-  uncovered: { filepath: string; line: number }[];
+  details: Record<string, unknown>;
 };
 
 export type CheckReport = {
@@ -53,10 +53,7 @@ export function createCheckReport(
           gate_policies: Object.fromEntries(gates.map((gate) => [gate.name, gate.policy])),
           errors: [...errors],
           reports: Object.fromEntries(
-            gates.map((gate) => [
-              gate.name,
-              { status: gate.status, uncovered: gate.uncovered },
-            ]),
+            gates.map((gate) => [gate.name, { status: gate.status, ...gate.details }]),
           ),
         },
         null,
