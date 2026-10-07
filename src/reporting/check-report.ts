@@ -1,6 +1,14 @@
 import { toolVersion } from "../version.js";
+import { resolveStatus, type GateStatus, type ReportStatus } from "./gate-status.js";
 
-export type ReportStatus = "pass" | "fail" | "error";
+export type { ReportStatus };
+
+export type GateReport = {
+  name: string;
+  status: GateStatus;
+  policy: string;
+  uncovered: { filepath: string; line: number }[];
+};
 
 export type CheckReport = {
   tool: string;
@@ -15,12 +23,13 @@ export type CheckReport = {
 
 export function createCheckReport(
   tool: string,
-  status: ReportStatus,
   baseRef: string | null,
   paths: readonly string[],
   errors: readonly string[],
+  gates: readonly GateReport[] = [],
 ): CheckReport {
-  const summary = summarize(status, errors);
+  const status = resolveStatus(gates, errors);
+  const summary = summarize(status, errors, gates);
   return {
     tool,
     version: toolVersion,
@@ -40,10 +49,15 @@ export function createCheckReport(
             base: baseRef,
             paths: [...paths],
           },
-          gates_run: [],
-          gate_policies: {},
+          gates_run: gates.map((gate) => gate.name),
+          gate_policies: Object.fromEntries(gates.map((gate) => [gate.name, gate.policy])),
           errors: [...errors],
-          reports: {},
+          reports: Object.fromEntries(
+            gates.map((gate) => [
+              gate.name,
+              { status: gate.status, uncovered: gate.uncovered },
+            ]),
+          ),
         },
         null,
         2,
@@ -52,12 +66,19 @@ export function createCheckReport(
   };
 }
 
-function summarize(status: ReportStatus, errors: readonly string[]): string {
+function summarize(
+  status: ReportStatus,
+  errors: readonly string[],
+  gates: readonly GateReport[],
+): string {
   if (status === "error") {
     return errors[0] ?? "Quality gate stopped with a tool error.";
   }
   if (status === "fail") {
-    return "Quality gate failed.";
+    const failed = gates.filter((gate) => gate.status === "fail").map((gate) => gate.name);
+    return `Quality gate failed: ${failed.join(", ")}.`;
   }
-  return "All hard gates that ran passed (none).";
+  const passed = gates.filter((gate) => gate.status === "pass").map((gate) => gate.name);
+  const list = passed.length === 0 ? "none" : passed.join(", ");
+  return `All hard gates that ran passed (${list}).`;
 }

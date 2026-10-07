@@ -1,12 +1,15 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { gitChangedSourceLines } from "../coverage/changed-lines.js";
+import { scoreChangedLines } from "../coverage/score.js";
+import { coverageMissing, runVitestCoverage, type CoverageRun } from "../coverage/vitest-coverage.js";
 import { exitCodeFor } from "../exit-codes.js";
 import { loadForgeConfig } from "../config/load-forge-config.js";
-import { createCheckReport, type ReportStatus } from "../reporting/check-report.js";
+import { createCheckReport, type GateReport, type ReportStatus } from "../reporting/check-report.js";
 import { limitToDiff } from "../scope/git-diff.js";
 import { renderHelp } from "./help.js";
 import { parseArgs } from "./parse-args.js";
-import { isKnownVerb, requiresTestProject } from "./verbs.js";
+import { isKnownVerb, requiresTestProject, verbs } from "./verbs.js";
 
 export type RunIo = {
   cwd: string;
@@ -14,7 +17,11 @@ export type RunIo = {
   stderr: (text: string) => void;
 };
 
-export function run(args: readonly string[], io: RunIo): number {
+export type RunOptions = {
+  coverage?: (repoRoot: string, files: readonly string[]) => CoverageRun;
+};
+
+export function run(args: readonly string[], io: RunIo, options: RunOptions = {}): number {
   const parsed = parseArgs(args);
   if (parsed.help) {
     io.stdout(renderHelp());
@@ -35,6 +42,8 @@ export function run(args: readonly string[], io: RunIo): number {
   const loaded = loadForgeConfig(io.cwd);
   const paths = parsed.paths.length > 0 ? parsed.paths : (loaded.config?.paths ?? []);
   const errors: string[] = [];
+  const gates: GateReport[] = [];
+
   if (loaded.error !== null) {
     errors.push(loaded.error);
   } else if (loaded.config !== null && requiresTestProject(parsed.verb) && loaded.config.testProject === null) {
@@ -43,17 +52,22 @@ export function run(args: readonly string[], io: RunIo): number {
     const scoped = limitToDiff(loaded.repoRoot, parsed.baseRef, paths);
     if (scoped.error !== null) {
       errors.push(scoped.error);
+    } else if (parsed.verb === verbs.check) {
+      const coverageGate = evaluateCoverage(loaded.repoRoot, parsed.baseRef, paths, options.coverage);
+      if (coverageGate.error !== null) {
+        errors.push(coverageGate.error);
+      }
+      gates.push(coverageGate.gate);
     }
   }
 
-  const status: ReportStatus = errors.length > 0 ? "error" : "pass";
-  let report = createCheckReport(parsed.verb, status, parsed.baseRef, paths, errors);
+  let report = createCheckReport(parsed.verb, parsed.baseRef, paths, errors, gates);
 
   if (parsed.jsonPath !== null) {
     const writeError = tryWriteReport(parsed.jsonPath, report.toJson());
     if (writeError !== null) {
       errors.push(writeError);
-      report = createCheckReport(parsed.verb, "error", parsed.baseRef, paths, errors);
+      report = createCheckReport(parsed.verb, parsed.baseRef, paths, errors, gates);
     }
   }
 
@@ -64,6 +78,43 @@ export function run(args: readonly string[], io: RunIo): number {
   const printed: ReportStatus = errors.length > 0 ? "error" : report.status;
   io.stdout(`${parsed.verb}: ${printed}\n`);
   return exitCodeFor(printed);
+}
+
+function evaluateCoverage(
+  repoRoot: string,
+  baseRef: string,
+  paths: readonly string[],
+  coverage: RunOptions["coverage"],
+): { gate: GateReport; error: string | null } {
+  const changed = gitChangedSourceLines(repoRoot, baseRef, paths);
+  if (changed.error !== null || changed.lines === null) {
+    return {
+      gate: coverageGate("error", []),
+      error: changed.error ?? coverageMissing,
+    };
+  }
+  if (changed.lines.length === 0) {
+    return { gate: coverageGate("pass", []), error: null };
+  }
+
+  const files = [...new Set(changed.lines.map((line) => line.filepath))];
+  const produced = (coverage ?? runVitestCoverage)(repoRoot, files);
+  if (produced.error !== null || produced.lcov === null) {
+    return {
+      gate: coverageGate("error", []),
+      error: produced.error ?? coverageMissing,
+    };
+  }
+
+  const uncovered = scoreChangedLines(changed.lines, produced.lcov, repoRoot);
+  return {
+    gate: coverageGate(uncovered.length > 0 ? "fail" : "pass", uncovered),
+    error: null,
+  };
+}
+
+function coverageGate(status: GateReport["status"], uncovered: GateReport["uncovered"]): GateReport {
+  return { name: "coverage", status, policy: "hard", uncovered };
 }
 
 function tryWriteReport(filePath: string, json: string): string | null {
