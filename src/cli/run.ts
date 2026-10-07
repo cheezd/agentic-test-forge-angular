@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { scoreCrap, type CrapFinding } from "../crap/gate.js";
 import { gitChangedSourceLines } from "../coverage/changed-lines.js";
 import { scoreChangedLines } from "../coverage/score.js";
 import { coverageMissing, runVitestCoverage, type CoverageRun } from "../coverage/vitest-coverage.js";
@@ -51,30 +52,39 @@ export function run(args: readonly string[], io: RunIo, options: RunOptions = {}
     errors.push(loaded.error);
   } else if (loaded.config !== null && requiresTestProject(parsed.verb) && loaded.config.testProject === null) {
     errors.push("test_project is missing from forge.json.");
-  } else if (parsed.verb === verbs.mutate && parsed.baseRef === null) {
-    errors.push("mutate requires --base so mutants stay on the diff.");
+  } else if ((parsed.verb === verbs.mutate || parsed.verb === verbs.crap) && parsed.baseRef === null) {
+    errors.push(`${parsed.verb} requires --base so scores stay on the diff.`);
   } else if (parsed.baseRef !== null && loaded.repoRoot !== null && loaded.config !== null) {
     const scoped = limitToDiff(loaded.repoRoot, parsed.baseRef, paths);
     if (scoped.error !== null) {
       errors.push(scoped.error);
     } else {
-      const floor =
+      const mutationFloor =
         parsed.verb === verbs.mutate && parsed.threshold !== null
           ? parsed.threshold
           : loaded.config.mutationThreshold;
-      if (parsed.verb === verbs.check) {
-        const coverageGate = evaluateCoverage(loaded.repoRoot, parsed.baseRef, paths, options.coverage);
-        if (coverageGate.error !== null) {
-          errors.push(coverageGate.error);
-        }
-        gates.push(coverageGate.gate);
+      const crapCeiling =
+        parsed.verb === verbs.crap && parsed.threshold !== null
+          ? parsed.threshold
+          : loaded.config.crapThreshold;
+      if (parsed.verb === verbs.check || parsed.verb === verbs.crap) {
+        const coverageAndCrap = evaluateCoverageAndCrap(
+          loaded.repoRoot,
+          parsed.baseRef,
+          paths,
+          crapCeiling,
+          parsed.verb === verbs.check,
+          options.coverage,
+        );
+        errors.push(...coverageAndCrap.errors);
+        gates.push(...coverageAndCrap.gates);
       }
       if (parsed.verb === verbs.check || parsed.verb === verbs.mutate) {
         const mutationGate = evaluateMutation(
           loaded.repoRoot,
           parsed.baseRef,
           paths,
-          floor,
+          mutationFloor,
           options.mutation,
         );
         if (mutationGate.error !== null) {
@@ -104,41 +114,68 @@ export function run(args: readonly string[], io: RunIo, options: RunOptions = {}
   return exitCodeFor(printed);
 }
 
-function evaluateCoverage(
+function evaluateCoverageAndCrap(
   repoRoot: string,
   baseRef: string,
   paths: readonly string[],
+  ceiling: number,
+  includeLineCoverage: boolean,
   coverage: RunOptions["coverage"],
-): { gate: GateReport; error: string | null } {
+): { gates: GateReport[]; errors: string[] } {
   const changed = gitChangedSourceLines(repoRoot, baseRef, paths);
   if (changed.error !== null || changed.lines === null) {
+    const error = changed.error ?? coverageMissing;
     return {
-      gate: coverageGate("error", []),
-      error: changed.error ?? coverageMissing,
+      errors: [error],
+      gates: [
+        ...(includeLineCoverage ? [coverageGate("error", [])] : []),
+        crapGate("error", ceiling, []),
+      ],
     };
   }
   if (changed.lines.length === 0) {
-    return { gate: coverageGate("pass", []), error: null };
+    return {
+      errors: [],
+      gates: [
+        ...(includeLineCoverage ? [coverageGate("pass", [])] : []),
+        crapGate("pass", ceiling, []),
+      ],
+    };
   }
 
   const files = [...new Set(changed.lines.map((line) => line.filepath))];
   const produced = (coverage ?? runVitestCoverage)(repoRoot, files);
   if (produced.error !== null || produced.lcov === null) {
+    const error = produced.error ?? coverageMissing;
     return {
-      gate: coverageGate("error", []),
-      error: produced.error ?? coverageMissing,
+      errors: [error],
+      gates: [
+        ...(includeLineCoverage ? [coverageGate("error", [])] : []),
+        crapGate("error", ceiling, []),
+      ],
     };
   }
 
-  const uncovered = scoreChangedLines(changed.lines, produced.lcov, repoRoot);
-  return {
-    gate: coverageGate(uncovered.length > 0 ? "fail" : "pass", uncovered),
-    error: null,
-  };
+  const gates: GateReport[] = [];
+  if (includeLineCoverage) {
+    const uncovered = scoreChangedLines(changed.lines, produced.lcov, repoRoot);
+    gates.push(coverageGate(uncovered.length > 0 ? "fail" : "pass", uncovered));
+  }
+
+  const scored = scoreCrap(repoRoot, changed.lines, produced.lcov, ceiling);
+  if (scored.error !== null) {
+    return { errors: [scored.error], gates: [...gates, crapGate("error", ceiling, [])] };
+  }
+  gates.push(crapGate(scored.failed ? "fail" : "pass", ceiling, scored.findings));
+  return { gates, errors: [] };
 }
 
 function coverageGate(status: GateReport["status"], uncovered: { filepath: string; line: number }[]): GateReport {
   return { name: "coverage", status, policy: "hard", details: { uncovered } };
+}
+
+function crapGate(status: GateReport["status"], threshold: number, findings: CrapFinding[]): GateReport {
+  return { name: "crap", status, policy: "hard", details: { threshold, findings } };
 }
 
 function evaluateMutation(
