@@ -37,4 +37,6 @@ node dist/cli.js check --base main --json report.json
 
 `--json` writes the report, and a one-line status still prints. `forge --help` lists the flags. `--base` scores only files changed against that ref, inside `paths`. A git failure is exit 2.
 
-Exit 0 when every hard gate that ran passed. Exit 1 when a hard gate fails. Exit 2 when config cannot be loaded or `test_project` is missing. A tool error outranks a gate failure. The JSON `status` is `pass`, `fail`, or `error`.
+`forge check --base` runs Vitest coverage on the changed TypeScript files. An uncovered changed line exits 1. A run that cannot produce coverage exits 2. Template files stay out of this gate.
+
+Exit 0 when every hard gate that ran passed. Exit 1 when a hard gate fails. Exit 2 when config cannot be loaded, `test_project` is missing, or coverage cannot be produced. A tool error outranks a gate failure. The JSON `status` is `pass`, `fail`, or `error`.
