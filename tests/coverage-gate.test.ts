@@ -33,7 +33,7 @@ describe("coverage gate", () => {
       reports: { coverage: { status: string; uncovered: { filepath: string; line: number }[] } };
     };
     expect(report.status).toBe("fail");
-    expect(report.gates_run).toEqual(["coverage", "mutation"]);
+    expect(report.gates_run).toEqual(["coverage", "crap", "mutation"]);
     expect(report.reports.coverage.uncovered).toEqual([{ filepath: "src/app/kept.ts", line: 1 }]);
   });
 
