@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { scoreCrap, type CrapFinding } from "../crap/gate.js";
+import { collectDry, defaultDryCollectors, type DryCollector } from "../dry/collect.js";
 import { gitChangedSourceLines } from "../coverage/changed-lines.js";
 import { scoreChangedLines } from "../coverage/score.js";
 import { coverageMissing, runVitestCoverage, type CoverageRun } from "../coverage/vitest-coverage.js";
@@ -23,6 +24,7 @@ export type RunIo = {
 export type RunOptions = {
   coverage?: (repoRoot: string, files: readonly string[]) => CoverageRun;
   mutation?: (repoRoot: string, files: readonly string[]) => MutationRun;
+  dryCollectors?: Record<string, DryCollector>;
 };
 
 export function run(args: readonly string[], io: RunIo, options: RunOptions = {}): number {
@@ -93,6 +95,18 @@ export function run(args: readonly string[], io: RunIo, options: RunOptions = {}
         gates.push(mutationGate.gate);
       }
     }
+  }
+
+  if (
+    loaded.error === null &&
+    loaded.config !== null &&
+    loaded.repoRoot !== null &&
+    (parsed.verb === verbs.check || parsed.verb === verbs.dry) &&
+    !(requiresTestProject(parsed.verb) && loaded.config.testProject === null)
+  ) {
+    gates.push(
+      evaluateDry(loaded.repoRoot, paths, loaded.config.drySources, options.dryCollectors),
+    );
   }
 
   let report = createCheckReport(parsed.verb, parsed.baseRef, paths, errors, gates);
@@ -168,6 +182,24 @@ function evaluateCoverageAndCrap(
   }
   gates.push(crapGate(scored.failed ? "fail" : "pass", ceiling, scored.findings));
   return { gates, errors: [] };
+}
+
+function evaluateDry(
+  repoRoot: string,
+  paths: readonly string[],
+  sources: readonly string[],
+  collectors: Record<string, DryCollector> | undefined,
+): GateReport {
+  const collected = collectDry(repoRoot, paths, sources, collectors ?? defaultDryCollectors());
+  if (!collected.ran) {
+    return { name: "dry", status: "skipped", policy: "advisory", details: { advisory: true, findings: [] } };
+  }
+  return {
+    name: "dry",
+    status: "advisory",
+    policy: "advisory",
+    details: { advisory: true, findings: collected.findings },
+  };
 }
 
 function coverageGate(status: GateReport["status"], uncovered: { filepath: string; line: number }[]): GateReport {

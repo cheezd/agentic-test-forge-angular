@@ -1,4 +1,4 @@
-export type GateStatus = "pass" | "fail" | "error" | "skipped";
+export type GateStatus = "pass" | "fail" | "error" | "skipped" | "advisory";
 
 export type ReportStatus = "pass" | "fail" | "error";
 
