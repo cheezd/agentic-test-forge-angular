@@ -1,0 +1,22 @@
+{
+  "name": "agentic-test-forge-angular",
+  "version": "0.1.0",
+  "description": "Angular quality gate for agentic development. Same forge check contract as agentic-test-forge.",
+  "type": "module",
+  "bin": {
+    "forge": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.3"
+  }
+}
